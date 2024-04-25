@@ -23,7 +23,7 @@
 # THE SOFTWARE.
 
 import math
-
+import os
 # Pseudo Mercator tile
 R = 6378137
 TSIZE1 = R * math.pi
@@ -33,6 +33,12 @@ def degreesToMercatorMeters(lon, lat):
   x = R * lon * math.pi / 180
   y = R * math.log(math.tan((90 + lat) * math.pi / 360))
   return x, y
+
+def mercatorMetersToDegrees(x, y):
+  # formula: http://en.wikipedia.org/wiki/Mercator_projection
+  lon = x / R * 180 / math.pi
+  lat = 360 / math.pi * math.atan(math.exp(y / R)) - 90
+  return lon, lat
 
 def scaleDenominator(zoom):
   c = 2 * TSIZE1
@@ -102,7 +108,7 @@ def xyz2wmts(settings):
     E(e, "ows:ServiceTypeVersion", text="1.0.0")
     E(e, "ows:Title", text=service["Title"])
 
-    for lang, abstract in (service.get("Abstract") or {}).iteritems():
+    for lang, abstract in (service.get("Abstract") or {}).items():
       E(e, "ows:Abstract", {"xml:lang": lang}, abstract)
 
     if service.get("Keywords"):
@@ -143,20 +149,25 @@ def xyz2wmts(settings):
       E(layer, "ows:Abstract", text=lyr.abstract)
 
     if lyr.bbox:
-      xmin, ymin = degreesToMercatorMeters(lyr.bbox[0], lyr.bbox[1])
-      xmax, ymax = degreesToMercatorMeters(lyr.bbox[2], lyr.bbox[3])
+      xmin, ymin = (lyr.bbox[0], lyr.bbox[1])
+      xmax, ymax = (lyr.bbox[2], lyr.bbox[3])
     else:
       xmin = ymin = -TSIZE1
       xmax = ymax = TSIZE1
+
+
+
 
     e = E(layer, "ows:BoundingBox", {"crs": "urn:ogc:def:crs:EPSG:6.18.3:3857"})
     E(e, "ows:LowerCorner", text="{0} {1}".format(xmin, ymin))
     E(e, "ows:UpperCorner", text="{0} {1}".format(xmax, ymax))
 
     if lyr.bbox:
+      xmin84, ymin84 = mercatorMetersToDegrees(lyr.bbox[0], lyr.bbox[1])
+      xmax84, ymax84 = mercatorMetersToDegrees(lyr.bbox[2], lyr.bbox[3])
       e = E(layer, "ows:WGS84BoundingBox", {"crs": "urn:ogc:def:crs:OGC:2:84"})
-      E(e, "ows:LowerCorner", text="{0} {1}".format(lyr.bbox[0], lyr.bbox[1]))
-      E(e, "ows:UpperCorner", text="{0} {1}".format(lyr.bbox[2], lyr.bbox[3]))
+      E(e, "ows:LowerCorner", text="{0} {1}".format(xmin84, ymin84))
+      E(e, "ows:UpperCorner", text="{0} {1}".format(xmax84, ymax84))
 
     e = E(layer, "Style", {"isDefault": "true"})
     E(e , "ows:Identifier", text="default")
@@ -184,7 +195,7 @@ def xyz2wmts(settings):
     for zoom in range(zmin, zmax + 1):
       matrix = E(matrixSet, "TileMatrix")
       E(matrix, "ows:Identifier", text=str(zoom))
-      tileSize = 256
+      tileSize = settings.get("tile_size", 256)
       matrixSize = 2 ** zoom
       E(matrix, "ScaleDenominator", text="{0:.12f}".format(scaleDenominator(zoom)))
       E(matrix, "TopLeftCorner", text="{0:.8f} {1:.8f}".format(-TSIZE1, TSIZE1))
@@ -194,6 +205,13 @@ def xyz2wmts(settings):
       E(matrix, "MatrixHeight", text=str(matrixSize))
 
   return doc
+
+
+# from collections import OrderedDict
+#xmltodict
+import xml.etree.ElementTree as ET
+from bs4 import BeautifulSoup
+import re
 
 def mod2dict(mod):
   d ={}
@@ -205,23 +223,114 @@ def mod2dict(mod):
 if __name__ == "__main__":
   import sys
 
+  INDENT = ' ' * 4
+
   if len(sys.argv) == 1:
     # read settings from settings.py if no command line parameter is specified
     import settings
-    print xyz2wmts(mod2dict(settings)).document().toprettyxml("  ", "\n", "utf-8")
+
+    xml_output = xyz2wmts(mod2dict(settings)).document().toprettyxml("  ", "\n", "utf-8")
+    print (xml_output.decode('utf-8'))
+
     sys.exit(0)
 
-  # read settings from json file
-  import os
-  import json
+  
+  if len(sys.argv) >= 2:
+    # read settings from settings.py if no command line parameter is specified
+    import settings
+    # read xml file
+    xmlfile = sys.argv[1]
+    # if xml file ends in html
+    if not os.path.exists(xmlfile):
+      sys.stderr.write("{} doesn't exist.".format(xmlfile))
+      sys.exit(1)
 
-  filename = sys.argv[1]
-  if not os.path.exists(filename):
-    sys.stderr.write("{} doesn't exist.".format(filename))
-    sys.exit(1)
+    with open(xmlfile) as f:
+        inxml = f.read()
+      
 
-  with open(filename) as f:
-    settings = json.load(f)
+    if xmlfile.endswith('.html'):
+        # parse html and get javascript section
 
-  print xyz2wmts(settings).document().toprettyxml("  ", "\n", "utf-8")
-  sys.exit(0)
+        # Use BeautifulSoup to parse HTML
+        soup = BeautifulSoup(inxml, 'html.parser')
+
+        # Find the script element containing the configuration
+        script = soup.find_all('script')[-1].string
+
+        # Extract minZoom, maxZoom, and bounds using regex
+        min_zoom = re.search(r'minZoom: (\d+)', script).group(1)
+        max_zoom = re.search(r'maxZoom: (\d+)', script).group(1)
+        bounds = re.search(r'extent: \[(.*?)\]', script).group(1)
+        # tileSize: [512, 512]
+        tile_size = re.search(r'tileSize: (\[.*?\])', script).group(1)
+        # url: './{z}/{x}/{y}.webp',
+        #strip leading .
+        url_odix = re.search(r'url: \'(.*?)\'', script).group(1).lstrip('.')
+
+
+        # debugging requests override below
+        # replace webp with png
+        # url_odix = url_odix.replace('.webp', '.png')
+        # tile_size = tile_size.replace('512', '256')
+
+
+        # format = "image/webp" if url_odix.endswith('.webp') else 'image/png'
+
+        #terrimap doenst request tiles the standard way of this this set to webp
+        format = "image/png"
+
+
+        # print to std:error
+
+        print(min_zoom, max_zoom, bounds, tile_size,url_odix, file=sys.stderr)
+
+        if len(sys.argv) == 2:
+          settings.tile_size = int(tile_size.split(",")[0].strip("[]"))
+            
+          settings.layers.append([u"osm", u"OpenStreetMap", u"", "http://localhost/wmts/osm/{z}/{x}/{y}.png", 0, 19])
+          settingsdict = mod2dict(settings)
+          
+
+          settingsdict["layers"][0][4] = int(min_zoom)
+          settingsdict["layers"][0][5] = int(max_zoom)
+          bounds = [float(x) for x in bounds.split(",")]
+          settingsdict["layers"][0].append(bounds)
+          settingsdict["layers"][0].append(format)
+
+        else:
+          # get url and title form argv
+          baseurl = sys.argv[2]
+          # slug = sys.argv[3]
+          # properties = sys.argv[4]
+          # tidyname = sys.argv[5]
+          settings.tile_size = int(tile_size.split(",")[0].strip("[]"))
+
+          settings.metadataURL = baseurl + "/WMTSCapabilities.xml"
+          slug = sys.argv[3]
+
+
+          # layers.append([u"srtm3_shaded_relief", u"SRTM3 SHADED RELIEF (JAPAN)", u"The source is SRTM3.",
+          #                "http://localhost/wmts/srtm3_shaded_relief/{z}/{x}/{y}.png",
+          #                3, 10, [119.9995833, 19.9995833, 154.0004167, 47.0004167]])
+
+          # layer name is hidden, use consistent id for easy reference
+
+
+          settings.layers.append([u"overlay", u"overlay", u"", baseurl + url_odix, int(min_zoom), int(max_zoom), [float(x) for x in bounds.split(",")], format])
+          settingsdict = mod2dict(settings)
+
+        print(settingsdict, file=sys.stderr)
+
+    settingsdict = mod2dict(settings)
+
+
+    xml_output = xyz2wmts(mod2dict(settings)).document().toprettyxml("  ", "\n", "utf-8")
+
+    print (xml_output.decode('utf-8'))
+
+    print ("\n\n",settings.metadataURL,"\n\n", file=sys.stderr)
+
+
+
+    sys.exit(0)

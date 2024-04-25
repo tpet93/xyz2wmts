@@ -23,4 +23,4 @@ def settings2dict(settings):
   return d
 
 import settings
-print json.dumps(settings2dict(settings), ensure_ascii=False, sort_keys=False, indent=2)
+print (json.dumps(settings2dict(settings), ensure_ascii=False, sort_keys=False, indent=2))

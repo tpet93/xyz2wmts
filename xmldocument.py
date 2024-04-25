@@ -30,14 +30,14 @@ class MyXMLDocument:
 
   def append(self, parent, tagName, attributes=None, text=""):
     elem = self._doc.createElement(tagName)
-    for key, value in (attributes or {}).iteritems():
+    for key, value in (attributes or {}).items():
       elem.setAttribute(key, value)
     if text:
       elem.appendChild(self._doc.createTextNode(text))
     return (parent or self._doc).appendChild(elem)
 
   def appendTree(self, parent, dictionary):
-    for k, v in dictionary.iteritems():
+    for k, v in dictionary.items():
       if isinstance(v, dict):
         self.appendTree(self.append(parent, k), v)
       else:
